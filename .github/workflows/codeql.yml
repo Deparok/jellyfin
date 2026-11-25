@@ -8,7 +8,6 @@ on:
 
 jobs:
   analyze:
-    name: Analyze (C#)
     runs-on: ubuntu-latest
      # Явное указание разрешений
     permissions:
