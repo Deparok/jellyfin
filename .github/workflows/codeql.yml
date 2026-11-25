@@ -61,53 +61,54 @@ jobs:
       - name: Security Gate (CWE check)
         if: always()
         run: |
-          set -e
-      
-          SARIF_FILE=$(find ./codeql-results -name "*.sarif" -print -quit)
-      
-          if [ -z "$SARIF_FILE" ] || [ ! -f "$SARIF_FILE" ]; then
-            echo "::error::SARIF file not found"
+          set -euo pipefail
+
+          SARIF_FILE="$(find codeql-results -type f -name '*.sarif' -print -quit)"
+
+          if [[ -z "$SARIF_FILE" || ! -f "$SARIF_FILE" ]]; then
+            echo "::error::SARIF file not found; failing closed."
             exit 1
           fi
-      
-          echo "Используем SARIF: $SARIF_FILE"
-      
-          COUNT=$(jq '
+
+          echo "Using SARIF: $SARIF_FILE"
+
+          COUNT="$(jq '
             [
-              .runs[] as $run
+              .runs[]? as $run
               | (
-                  ($run.tool.driver.rules // []) +
-                  [$run.tool.extensions[]?.rules[]?]
+                  ($run.tool.driver.rules // [])
+                  + [$run.tool.extensions[]?.rules[]?]
                 ) as $rules
-      
               | $run.results[]? as $result
-      
+              | ([$rules[] | select(.id == $result.ruleId)][0] // {}) as $rule
               | (
-                  [$rules[] | select(.id == $result.ruleId)][0] // {}
-                ) as $rule
-      
+                  [
+                    ($rule.properties.tags // [])[],
+                    ($result.properties.tags // [])[]
+                  ]
+                ) as $tags
+              | (
+                  (
+                    $rule.properties["security-severity"]
+                    // $result.properties["security-severity"]
+                    // "0"
+                  ) | tonumber? // 0
+                ) as $severity
               | select(
                   (
-                    [
-                      ($rule.properties.tags // [])[],
-                      ($result.properties.tags // [])[]
-                    ]
-                    | any(test("external/cwe|CWE-[0-9]+"; "i"))
+                    any($tags[]; test("external/cwe/cwe-[0-9]+|CWE-[0-9]+"; "i"))
+                    or (($result.ruleId // "") | test("CWE-[0-9]+"; "i"))
+                    or (($result.message.text // "") | test("CWE-[0-9]+"; "i"))
                   )
-                  or
-                  (($result.message.text // "") | test("CWE-[0-9]+"; "i"))
-                  or
-                  (($result.ruleId // "") | test("CWE-[0-9]+"; "i"))
+                  and $severity > 9.0
                 )
             ]
             | length
-          ' "$SARIF_FILE")
-      
-          echo "Найдено CWE: $COUNT"
-      
-          if [ "$COUNT" -gt 0 ]; then
-            echo "::error::Security Gate FAILED: обнаружено $COUNT CWE"
+          ' "$SARIF_FILE")"
+
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "::error::Security Gate FAILED: найдено $COUNT критических CWE."
             exit 1
           fi
-      
-          echo "Security Gate PASSED: CWE не обнаружено."
+
+          echo "Security Gate PASSED: CWE не найдены."
