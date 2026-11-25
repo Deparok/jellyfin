@@ -1,0 +1,100 @@
+name: "CodeQL Security Gate (CWE)"
+
+on:
+  push:
+    branches: [ cwe-test, master ]
+  pull_request:
+    branches: [ cwe-test, master ]
+
+jobs:
+  analyze:
+    name: Analyze (C#)
+    runs-on: ubuntu-latest
+     # Явное указание разрешений
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      # Клонирование кода
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Установка .NET SDK
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Инициализация CodeQL
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          queries: security-and-quality
+
+      # Автоматическая сборка проекта
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      # Запуск анализа
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:csharp"
+          upload: false
+          output: ${{ github.workspace }}/codeql-results
+          
+      # Загрузка SARIF
+      - name: Upload SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: codeql-results/
+          category: codeql
+
+      # Падение сборки при наличии CWE
+      - name: Security Gate (CWE check)
+        if: always()
+        run: |
+          set -e
+          SARIF_FILE=$(find ./codeql-results -name "*.sarif" -print -quit)
+          if [ -z "$SARIF_FILE" ] || [ ! -f "$SARIF_FILE" ]; then
+            echo "::error::SARIF file not found"
+            exit 1
+          fi
+          echo "Используем SARIF: $SARIF_FILE"
+          COUNT=$(jq '
+            [
+              .runs[] as $run
+              | (
+                  ($run.tool.driver.rules // []) +
+                  [$run.tool.extensions[]?.rules[]?]
+                ) as $rules
+              | $run.results[]? as $result
+              | (
+                  [$rules[] | select(.id == $result.ruleId)][0] // {}
+                ) as $rule
+              | select(
+                  (
+                    [
+                      ($rule.properties.tags // [])[],
+                      ($result.properties.tags // [])[]
+                    ]
+                    | any(test("external/cwe|CWE-[0-9]+"; "i"))
+                  )
+                  or
+                  (($result.message.text // "") | test("CWE-[0-9]+"; "i"))
+                  or
+                  (($result.ruleId // "") | test("CWE-[0-9]+"; "i"))
+                )
+            ]
+            | length
+          ' "$SARIF_FILE")
+          echo "Найдено CWE: $COUNT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::error::Security Gate FAILED: обнаружено $COUNT CWE"
+            exit 1
+          fi
+          echo "Security Gate PASSED: CWE не обнаружено."
