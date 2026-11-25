@@ -1,4 +1,4 @@
-name: "CodeQL Security Gate (CWE)"
+name: CodeQL Security Gate (CWE)
 
 on:
   push:
@@ -7,9 +7,10 @@ on:
     branches: [ cwe-test, master ]
 
 jobs:
-  analyze:
+  codeql-security-gate:
     runs-on: ubuntu-latest
-     # Явное указание разрешений
+
+    # Явное указание разрешений
     permissions:
       actions: read
       contents: read
@@ -18,24 +19,27 @@ jobs:
     steps:
       # Клонирование кода
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Установка .NET SDK
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0'
 
       # Инициализация CodeQL
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: csharp
           queries: security-and-quality
+          
+      # Сборка проекта
+      - name: Restore dependencies
+        run: dotnet restore Jellyfin.slnx
 
-      # Автоматическая сборка проекта
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+      - name: Build project
+        run: dotnet build Jellyfin.slnx -c Release --no-restore
 
       # Запуск анализа
       - name: Perform CodeQL Analysis
@@ -44,26 +48,30 @@ jobs:
           category: "/language:csharp"
           upload: false
           output: ${{ github.workspace }}/codeql-results
-          
-      # Загрузка SARIF
+
+      # Загрузка SARIF 
       - name: Upload SARIF to Code Scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: codeql-results/
           category: codeql
-
+      
       # Падение сборки при наличии CWE
       - name: Security Gate (CWE check)
         if: always()
         run: |
           set -e
+      
           SARIF_FILE=$(find ./codeql-results -name "*.sarif" -print -quit)
+      
           if [ -z "$SARIF_FILE" ] || [ ! -f "$SARIF_FILE" ]; then
             echo "::error::SARIF file not found"
             exit 1
           fi
+      
           echo "Используем SARIF: $SARIF_FILE"
+      
           COUNT=$(jq '
             [
               .runs[] as $run
@@ -71,10 +79,13 @@ jobs:
                   ($run.tool.driver.rules // []) +
                   [$run.tool.extensions[]?.rules[]?]
                 ) as $rules
+      
               | $run.results[]? as $result
+      
               | (
                   [$rules[] | select(.id == $result.ruleId)][0] // {}
                 ) as $rule
+      
               | select(
                   (
                     [
@@ -91,9 +102,12 @@ jobs:
             ]
             | length
           ' "$SARIF_FILE")
+      
           echo "Найдено CWE: $COUNT"
+      
           if [ "$COUNT" -gt 0 ]; then
             echo "::error::Security Gate FAILED: обнаружено $COUNT CWE"
             exit 1
           fi
+      
           echo "Security Gate PASSED: CWE не обнаружено."
