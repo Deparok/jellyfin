@@ -1,0 +1,114 @@
+name: CodeQL Security Gate (CWE)
+
+on:
+  push:
+    branches: [ cwe-test, master ]
+  pull_request:
+    branches: [ cwe-test, master ]
+
+jobs:
+  codeql-security-gate:
+    runs-on: ubuntu-latest
+
+    # Явное указание разрешений
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      # Клонирование кода
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Установка .NET SDK
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0'
+
+      # Инициализация CodeQL
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          queries: security-and-quality
+          
+      # Сборка проекта
+      - name: Restore dependencies
+        run: dotnet restore Jellyfin.Server/Jellyfin.Server.csproj
+
+      - name: Build project
+        run: dotnet build Jellyfin.Server/Jellyfin.Server.csproj -c Release --no-restore
+
+      # Запуск анализа
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:csharp"
+          upload: false
+          output: ${{ github.workspace }}/codeql-results
+
+      # Загрузка SARIF 
+      - name: Upload SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: codeql-results/
+          category: codeql
+      
+      # Падение сборки при наличии CWE
+      - name: Security Gate (CWE check)
+        if: always()
+        run: |
+          set -euo pipefail
+
+          SARIF_FILE="$(find codeql-results -type f -name '*.sarif' -print -quit)"
+
+          if [[ -z "$SARIF_FILE" || ! -f "$SARIF_FILE" ]]; then
+            echo "::error::SARIF file not found; failing closed."
+            exit 1
+          fi
+
+          echo "Using SARIF: $SARIF_FILE"
+
+          COUNT="$(jq '
+            [
+              .runs[]? as $run
+              | (
+                  ($run.tool.driver.rules // [])
+                  + [$run.tool.extensions[]?.rules[]?]
+                ) as $rules
+              | $run.results[]? as $result
+              | ([$rules[] | select(.id == $result.ruleId)][0] // {}) as $rule
+              | (
+                  [
+                    ($rule.properties.tags // [])[],
+                    ($result.properties.tags // [])[]
+                  ]
+                ) as $tags
+              | (
+                  (
+                    $rule.properties["security-severity"]
+                    // $result.properties["security-severity"]
+                    // "0"
+                  ) | tonumber? // 0
+                ) as $severity
+              | select(
+                  (
+                    any($tags[]; test("external/cwe/cwe-[0-9]+|CWE-[0-9]+"; "i"))
+                    or (($result.ruleId // "") | test("CWE-[0-9]+"; "i"))
+                    or (($result.message.text // "") | test("CWE-[0-9]+"; "i"))
+                  )
+                  and $severity > 9.0
+                )
+            ]
+            | length
+          ' "$SARIF_FILE")"
+
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "::error::Security Gate FAILED: найдено $COUNT критических CWE."
+            exit 1
+          fi
+
+          echo "Security Gate PASSED: CWE не найдены."
