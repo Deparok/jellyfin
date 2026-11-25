@@ -36,14 +36,14 @@ jobs:
           
       # Сборка проекта
       - name: Restore dependencies
-        run: dotnet restore Jellyfin.slnx
+        run: dotnet restore Jellyfin.Server/Jellyfin.Server.csproj
 
       - name: Build project
-        run: dotnet build Jellyfin.slnx -c Release --no-restore
+        run: dotnet build Jellyfin.Server/Jellyfin.Server.csproj -c Release --no-restore
 
       # Запуск анализа
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:csharp"
           upload: false
@@ -52,7 +52,7 @@ jobs:
       # Загрузка SARIF 
       - name: Upload SARIF to Code Scanning
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: codeql-results/
           category: codeql
